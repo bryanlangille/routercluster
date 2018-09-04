@@ -1,0 +1,4 @@
+#!/bin/bash -x
+while [[ 1 -eq 1 ]]; do
+    sleep 10
+done
