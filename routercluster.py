@@ -32,7 +32,7 @@ class SystemInfo:
 
     def collect(self):
         threading.Timer(5.0, self.collect).start()
-        self.healthCheck = subprocess.check_output(['./health_check.sh'])
+        self.healthCheck = subprocess.check_output(['./health-check.sh'])
 
     def getConfiguration(self):
         return "\n".join("%s:%s" % item for item in vars(self).items())
