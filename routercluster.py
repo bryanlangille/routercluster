@@ -6,7 +6,13 @@ import pickle
 import netifaces as ni
 import uuid
 import subprocess
+import argparse
+from enum import Enum
+import logging
+import time
+import os
 
+log = logging.getLogger(__name__)
 
 class SystemInfo:
 
@@ -18,20 +24,21 @@ class SystemInfo:
         elif (self.os_type.startswith("linux")):
             self.interface = "eth0"
         else:
-            print("interface is %s" % self.os_type)
+            log.info("interface is %s" % self.os_type)
         self.systemTime = None
         self.interfaceAddress = self.getInterfaceAddress()
         self.fingerprint = str(uuid.uuid4())
         self.healthCheck = b''
         self.collect()
-        self.inService = 0
 
     def getInterfaceAddress(self):
         ni.ifaddresses(self.interface)
         return ni.ifaddresses(self.interface)[ni.AF_INET][0]['addr']
 
     def collect(self):
-        threading.Timer(5.0, self.collect).start()
+        collectLogsTimer = threading.Timer(5.0, self.collect)
+        collectLogsTimer.daemon = True
+        collectLogsTimer.start()
         self.healthCheck = subprocess.check_output(['./health-check.sh'])
 
     def getConfiguration(self):
@@ -39,18 +46,20 @@ class SystemInfo:
 
 
 class RouterCluster:
-    def __init__(self, config):
-        self.config = config
+    def __init__(self, routerConfiguration): #RouterConfiguration type
+        self.config = routerConfiguration
         self.socket = None
         self.port = 8019
         self.routersDict = dict()
         self.routeCmd = None
 
     def printConfiguration(self):
-        print("Configuration type is %s" % self.config.type)
+        log.info("Configuration type is %s" % self.config.type)
 
     def expireInactive(self):
-        threading.Timer(2.0, self.expireInactive).start()
+        inactiveConnectionsTimer = threading.Timer(2.0, self.expireInactive)
+        inactiveConnectionsTimer.daemon = True
+        inactiveConnectionsTimer.start()
         now = datetime.datetime.utcnow()
         ipRouteCmd = ""
         for key, value in self.routersDict.items():
@@ -59,7 +68,7 @@ class RouterCluster:
                 continue
             bufferedTime = storedTime + datetime.timedelta(seconds=5)
             if bufferedTime < now:
-                print("expring connection %s" % key)
+                log.info("expring connection %s" % key)
                 self.routersDict.pop(key, None)
             else:
                 if value.healthCheck is not None:
@@ -73,35 +82,40 @@ class RouterCluster:
 
         if (ipRouteCmd == ""):
             if self.routeCmd is not None:
+                log.info("No viable routers")
                 self.deleteDefaultRoute()
             self.routeCmd = None
-            print("No viable routers")
         else:
             if self.routeCmd != ipRouteCmd:
                 self.routeCmd = ipRouteCmd
-                print("Changing routes to %s" % ipRouteCmd)
+                log.info("Changing routes to %s" % ipRouteCmd)
                 self.setDefaultRoute()
+
+    def executeCommand(self, command):
+
+        log.info(command)
+        if sys.platform == "darwin":
+            return
+        commandParts = command.split(" ")
+        subprocess.call(commandParts)
+
 
     def flushRouteCache(self):
         command = "ip route flush cache"
-        commandParts = command.split(" ")
-        subprocess.call(commandParts)
+        self.executeCommand(command)
 
     def deleteDefaultRoute(self):
         command = "ip route del table workspaces default"
-        commandParts = command.split(" ")
-        subprocess.call(commandParts)
+        self.executeCommand(command)
         self.flushRouteCache()
 
     def setDefaultRoute(self):
         command = "ip route replace table workspaces default %s" % self.routeCmd
-        print(command)
-        commandParts = command.split(" ")
-        subprocess.call(commandParts)
+        self.executeCommand(command)
         self.flushRouteCache()
 
     def listen(self):
-        print("Listening ...")
+        log.info("Listening ...")
 
         self.expireInactive()
 
@@ -115,10 +129,20 @@ class RouterCluster:
         self.socket.listen(1)
         while True:
             conn, addr = self.socket.accept()
-            #print("received connection from %s" % addr[0])
+            found = 0
+            # don't log localhost. Other 'new' connections are logged upon connection
+            if addr[0] != "127.0.0.1":
+                for _, value in self.routersDict.items():
+                    if addr[0] == value.interfaceAddress:
+                        found = 1
+                        break
+
+                if not found:
+                    log.info("Received connection from new host %s" % addr[0])
+
             storedData = b''
             while 1:
-                data = conn.recv(2048)
+                data = conn.recv(1024)
                 if not data: break
                 storedData += data
 
@@ -128,56 +152,122 @@ class RouterCluster:
             self.routersDict.update(report)
 
     def report(self):
-        print("Reporting ...")
+        log.info("Reporting ...")
         self.systemInfo = SystemInfo()
         self.sendReport()
 
     def sendReport(self):
-        threading.Timer(2.0, self.sendReport).start()
+        sendReportTimer = threading.Timer(2.0, self.sendReport)
+        sendReportTimer.daemon = True
+        sendReportTimer.start()
+
         self.socket = socket.socket(
             socket.AF_INET, socket.SOCK_STREAM)
         self.socket.settimeout(3)
         try:
             self.socket.connect((self.config.serverEndpoint, self.port))
-            sent = self.socket.send(pickle.dumps(self.systemInfo))
-            if sent == 0:
-                raise RuntimeError("socket connection broken")
+            data = pickle.dumps(self.systemInfo)
+            dataLength = len(data)
+            dataPosition = 0
+            while dataPosition != dataLength:
+                sent = self.socket.send(data[dataPosition:])
+                if sent == 0:
+                    raise RuntimeError("socket connection broken")
+                dataPosition += sent
+
             if self.socket is not None:
                 self.socket.close()
+
         except socket.error, exc:
-            print("Caught exception socket.error : %s" % exc)
+            log.info("Caught exception socket.error : %s" % exc)
+
+        while True: time.sleep(100)
 
     def start(self):
-        if self.config.type == "server":
+        if self.config.type == ClusterType.SERVER:
             self.listen()
-        elif self.config.type == "client":
+        elif self.config.type == ClusterType.CLIENT:
             self.report()
 
 
-class Config:
-    def __init__(self):
-        self.type = sys.argv[1]
-        self.serverEndpoint = None
-        if self.type == "client":
-            self.serverEndpoint = sys.argv[2]
-        else:
-            self.serverEndpoint = "0.0.0.0"
+class ClusterType(Enum):
+    SERVER = 1
+    CLIENT = 2
 
 
 class RouterConfiguration:
 
-    def readConfiguration(self):
-        # read configuration
-        print("Reading configuration")
-        config = Config()
-        return config
+    def __init__(self, args):
+        self.client = None
+        self.server = None
+        self.serverEndpoint = None
+        self.type = None
+
+        if args.server:
+            self.type = ClusterType.SERVER
+            self.serverEndpoint = "0.0.0.0"
+        elif args.client:
+            self.type = ClusterType.CLIENT
+            if args.serverHost is None:
+                raise Exception("--serverHost must be specified when --client is specified")
+            self.serverEndpoint = args.serverHost
+        else:
+            raise Exception("Either --client or --server must be specified")
+
+        self.initLogging(args.logLevel)
+
+
+    def initLogging(self, logLevel):
+        if logLevel is None:
+            logLevel = "INFO"
+
+        # log level
+        numeric_log_level = getattr(logging, logLevel.upper(), 10)
+
+        # log format
+        log_format = "%(asctime)s [%(levelname)s] %(message)s"
+
+        # apply log settings
+        log.setLevel(numeric_log_level)
+        type = "server" if self.type is ClusterType.SERVER else "client"
+        filename = os.path.splitext(__file__)[0]
+        logDirPath = "/var/log/%s" % filename
+
+        if not os.path.exists(logDirPath):
+            try:
+                os.makedirs(logDirPath)
+            except OSError:
+                raise
+
+        logFileName = "%s/%s-%s.log" % (logDirPath, filename, type)
+        logging.basicConfig(filename=logFileName, format=log_format, datefmt='%Y-%m-%d %H:%M:%S')
+        consoleOutput = logging.StreamHandler(sys.stdout)
+        consoleOutput.setFormatter(logging.Formatter(log_format))
+        log.addHandler(consoleOutput)
 
     def initialize(self):
-        print("Initializing")
-        config = self.readConfiguration()
-        clusterInstance = RouterCluster(config)
+        log.info("Initializing")
+        clusterInstance = RouterCluster(self)
         clusterInstance.printConfiguration()
-        clusterInstance.start()
+        try:
+            clusterInstance.start()
+        except KeyboardInterrupt:
+            log.info("User requested exit")
+            pass
+
+class ClusterArgParser():
+    def __init__(self):
+        self.args = None
+        self.parser = argparse.ArgumentParser()
+        self.parser.add_argument("--logLevel", help="Log level")
+        self.parser.add_argument("--client", help="Run the routercluster as a client", action="store_true")
+        self.parser.add_argument("--server", help="Run the routercluster as a server", action="store_true")
+        self.parser.add_argument("--serverHost", help="Where the client should report to")
+
+    def parseArgs(self):
+        self.args = self.parser.parse_args()
+        return self.args
 
 if __name__ == "__main__":
-    RouterConfiguration().initialize()
+    args = ClusterArgParser().parseArgs()
+    RouterConfiguration(args).initialize()
