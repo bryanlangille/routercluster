@@ -230,7 +230,7 @@ class RouterConfiguration:
         # apply log settings
         log.setLevel(numeric_log_level)
         type = "server" if self.type is ClusterType.SERVER else "client"
-        filename = os.path.splitext(__file__)[0]
+        filename = os.path.splitext(os.path.basename(__file__))[0]
         logDirPath = "/var/log/%s" % filename
 
         if not os.path.exists(logDirPath):
