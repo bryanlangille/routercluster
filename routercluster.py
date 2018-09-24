@@ -146,10 +146,13 @@ class RouterCluster:
                 if not data: break
                 storedData += data
 
-            reportData = pickle.loads(storedData)
-            reportData.systemTime = datetime.datetime.utcnow()
-            report = {reportData.fingerprint: reportData}
-            self.routersDict.update(report)
+            try:
+                reportData = pickle.loads(storedData)
+                reportData.systemTime = datetime.datetime.utcnow()
+                report = {reportData.fingerprint: reportData}
+                self.routersDict.update(report)
+            except Exception as e:
+                log.error("Failed to load received data: %s" % e)
 
     def report(self):
         log.info("Reporting ...")
