@@ -11,20 +11,27 @@ from enum import Enum
 import logging
 import time
 import os
+import netifaces
 
 log = logging.getLogger(__name__)
 
 class SystemInfo:
 
-    def __init__(self):
+    def __init__(self, interface = None):
         self.os_type = sys.platform
         self.interface = None
-        if (self.os_type == "darwin"):
+        if interface is not None:
+            self.interface = interface
+            return
+
+        if self.os_type == "darwin":
             self.interface = "en0"
-        elif (self.os_type.startswith("linux")):
+        elif self.os_type.startswith("linux"):
             self.interface = "eth0"
         else:
-            log.info("interface is %s" % self.os_type)
+            log.info("Distribution type is %s" % self.os_type)
+
+    def initializeClient(self):
         self.systemTime = None
         self.interfaceAddress = self.getInterfaceAddress()
         self.fingerprint = str(uuid.uuid4())
@@ -32,8 +39,17 @@ class SystemInfo:
         self.collect()
 
     def getInterfaceAddress(self):
-        ni.ifaddresses(self.interface)
-        return ni.ifaddresses(self.interface)[ni.AF_INET][0]['addr']
+        try:
+            interface = ni.ifaddresses(self.interface)
+        except ValueError:
+            log.error("Failed to get interface information for %s" % self.interface)
+            return None
+
+        if netifaces.AF_INET not in interface:
+            return None
+
+        return interface[ni.AF_INET][0]['addr']
+
 
     def collect(self):
         collectLogsTimer = threading.Timer(5.0, self.collect)
@@ -43,6 +59,15 @@ class SystemInfo:
 
     def getConfiguration(self):
         return "\n".join("%s:%s" % item for item in vars(self).items())
+
+    def waitForEth1(self):
+        address = self.getInterfaceAddress()
+        while address is None:
+            log.info("Waiting for interface %s to come up" % self.interface)
+            time.sleep(1)
+            address = self.getInterfaceAddress()
+
+        log.info("%s is up: %s" % (self.interface, address))
 
 
 class RouterCluster:
@@ -126,7 +151,8 @@ class RouterCluster:
 
         self.socket.bind((self.config.serverEndpoint, self.port))
         # become a server socket
-        self.socket.listen(1)
+        self.socket.listen(5)
+
         while True:
             conn, addr = self.socket.accept()
             found = 0
@@ -157,6 +183,7 @@ class RouterCluster:
     def report(self):
         log.info("Reporting ...")
         self.systemInfo = SystemInfo()
+        self.systemInfo.initializeClient()
         self.sendReport()
 
     def sendReport(self):
@@ -188,6 +215,8 @@ class RouterCluster:
 
     def start(self):
         if self.config.type == ClusterType.SERVER:
+            systemInfo = SystemInfo("eth1")
+            systemInfo.waitForEth1()
             self.listen()
         elif self.config.type == ClusterType.CLIENT:
             self.report()
