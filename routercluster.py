@@ -208,11 +208,11 @@ class RouterCluster:
                     raise RuntimeError("socket connection broken")
                 dataPosition += sent
 
-            if self.socket is not None:
-                self.socket.close()
-
         except socket.error, exc:
             log.info("Caught exception socket.error : %s" % exc)
+
+        if self.socket is not None:
+            self.socket.close()
 
         while True: time.sleep(100)
 
