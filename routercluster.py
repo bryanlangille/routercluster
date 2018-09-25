@@ -167,18 +167,21 @@ class RouterCluster:
                     log.info("Received connection from new host %s" % addr[0])
 
             storedData = b''
+            totalReceived = 0
             while 1:
                 data = conn.recv(1024)
                 if not data: break
                 storedData += data
+                totalReceived += len(data)
 
-            try:
-                reportData = pickle.loads(storedData)
-                reportData.systemTime = datetime.datetime.utcnow()
-                report = {reportData.fingerprint: reportData}
-                self.routersDict.update(report)
-            except Exception as e:
-                log.error("Failed to load received data: %s" % e)
+            if totalReceived > 0:
+                try:
+                    reportData = pickle.loads(storedData)
+                    reportData.systemTime = datetime.datetime.utcnow()
+                    report = {reportData.fingerprint: reportData}
+                    self.routersDict.update(report)
+                except Exception as e:
+                    log.error("Failed to load received data: %s" % e)
 
     def report(self):
         log.info("Reporting ...")
@@ -187,13 +190,13 @@ class RouterCluster:
         self.sendReport()
 
     def sendReport(self):
-        sendReportTimer = threading.Timer(2.0, self.sendReport)
+        sendReportTimer = threading.Timer(3.0, self.sendReport)
         sendReportTimer.daemon = True
         sendReportTimer.start()
 
         self.socket = socket.socket(
             socket.AF_INET, socket.SOCK_STREAM)
-        self.socket.settimeout(3)
+        self.socket.settimeout(2)
         try:
             self.socket.connect((self.config.serverEndpoint, self.port))
             data = pickle.dumps(self.systemInfo)
