@@ -166,7 +166,7 @@ class RouterCluster:
                 if not found:
                     log.info("Received connection from new host %s" % addr[0])
 
-            storedData = b''
+            storedData = ""
             totalReceived = 0
             while 1:
                 data = conn.recv(1024)
@@ -182,6 +182,9 @@ class RouterCluster:
                     self.routersDict.update(report)
                 except Exception as e:
                     log.error("Failed to load received data: %s" % e)
+
+            if conn is not None:
+                conn.close()
 
     def report(self):
         log.info("Reporting ...")
