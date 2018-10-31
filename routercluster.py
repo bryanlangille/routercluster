@@ -186,6 +186,27 @@ class RouterCluster:
             if conn is not None:
                 conn.close()
 
+    def listen_healthcheck(self):
+        log.info("Listening for health check requests ...")
+
+        hcSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        hcSocket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        hcSocket.bind(('0.0.0.0', self.port))
+        hcSocket.listen(10)
+        while True:
+            conn, addr = hcSocket.accept()
+            while True:
+                data = conn.recv(1024)
+
+                if data:
+                    conn.send(data)
+                else:
+                    break
+
+            if conn is not None:
+                conn.close()
+
+
     def report(self):
         log.info("Reporting ...")
         self.systemInfo = SystemInfo()
@@ -225,6 +246,9 @@ class RouterCluster:
             systemInfo.waitForEth1()
             self.listen()
         elif self.config.type == ClusterType.CLIENT:
+            healthCheck = threading.Thread(target=self.listen_healthcheck)
+            healthCheck.daemon = True
+            healthCheck.start()
             self.report()
 
 
